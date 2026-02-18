@@ -4,6 +4,7 @@ import os
 import tempfile
 import uuid
 import shutil
+from flask_cors import CORS  # ← TAMBAHNO KIYE!
 
 # Init Flask app
 app = Flask(__name__)
