@@ -1,158 +1,61 @@
-from flask import Flask, request, jsonify, send_file, make_response
-from yt_dlp import YoutubeDL
 import os
-import tempfile
-import uuid
-import shutil
-from flask_cors import CORS  # ← TAMBAHNO KIYE!
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+import yt_dlp
 
-# Init Flask app
-app = Flask(__name__)
+app = FastAPI()
 
-# CORS Headers - WAJIB kanggo Vercel!
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    response.headers.add('Access-Control-Max-Age', '86400')
-    return response
+# PENTING: Izinkan akses dari GitHub Pages Anda
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Anda bisa mengganti "*" dengan URL GitHub Pages Anda nanti
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Handle preflight OPTIONS request
-@app.route('/', methods=['OPTIONS'])
-@app.route('/download', methods=['OPTIONS'])
-def options_handler():
-    response = make_response('', 200)
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
+API_KEY = os.environ.get("API_KEY", "admin123")
+API_KEY_NAME = "X-API-KEY"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# Root endpoint - kanggo test
-@app.route('/', methods=['GET'])
-def index():
-    return jsonify({
-        'status': 'ok',
-        'message': 'Backend is running! 🗿',
-        'endpoints': {
-            'download': 'POST /download',
-            'body': {'url': 'video_url', 'format': 'video|audio'}
-        }
-    })
+async def validate_api_key(header_value: str = Security(api_key_header)):
+    if header_value == API_KEY:
+        return header_value
+    raise HTTPException(status_code=403, detail="API Key Salah atau Tidak Ada")
 
-# Download endpoint
-@app.route('/download', methods=['POST'])
-def download():
-    download_dir = None
+@app.get("/api/info")
+async def get_video_info(url: str, api_key: str = Depends(validate_api_key)):
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'format': 'best',
+    }
     
     try:
-        # Get JSON data
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'No JSON data provided', 'message': 'Kirim JSON bangsat! 🗿'}), 400
-        
-        # Get parameters
-        url = data.get('url')
-        format_type = data.get('format', 'video')
-        
-        # Validate URL
-        if not url:
-            return jsonify({'error': 'URL is required', 'message': 'URL-e endi, Cuk? 🤣'}), 400
-        
-        # Create temporary directory
-        download_dir = f"/tmp/downloads_{uuid.uuid4().hex}"
-        os.makedirs(download_dir, exist_ok=True)
-        
-        # Configure yt-dlp options
-        ydl_opts = {
-            'outtmpl': f'{download_dir}/%(id)s.%(ext)s',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'ignoreerrors': False,
-        }
-        
-        # Set format based on type
-        if format_type == 'audio':
-            ydl_opts.update({
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-            })
-        else:
-            # Video - download best quality
-            ydl_opts.update({
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',
-            })
-        
-        # Download video/audio
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = []
             
-            if not info:
-                return jsonify({'error': 'Failed to extract info', 'message': 'URL ora valid, Cuk! 🗿'}), 400
-            
-            # Determine filename
-            filename = ydl.prepare_filename(info)
-            
-            # For audio, change extension to mp3
-            if format_type == 'audio':
-                filename = filename.rsplit('.', 1)[0] + '.mp3'
-            
-            # Check if file exists
-            if not os.path.exists(filename):
-                # Try to find file with different extension
-                base_name = filename.rsplit('.', 1)[0]
-                for ext in ['mp4', 'mkv', 'webm', 'mp3', 'm4a']:
-                    test_file = f'{base_name}.{ext}'
-                    if os.path.exists(test_file):
-                        filename = test_file
-                        break
-            
-            # Get file size
-            file_size = os.path.getsize(filename) if os.path.exists(filename) else 0
-            
-            if file_size == 0:
-                return jsonify({'error': 'File empty or not found', 'message': 'File kosong, Cuk! 💔'}), 500
-            
-            # Send file
-            return send_file(
-                filename,
-                as_attachment=True,
-                download_name=os.path.basename(filename),
-                mimetype='video/mp4' if format_type == 'video' else 'audio/mpeg'
-            )
-            
+            for f in info.get('formats', []):
+                if f.get('url'):
+                    # Filter resolusi atau keterangan audio
+                    res = f.get('resolution') or f.get('format_note') or "Unknown"
+                    is_audio = f.get('vcodec') == 'none'
+                    
+                    formats.append({
+                        'format_id': f.get('format_id'),
+                        'ext': f.get('ext'),
+                        'resolution': res,
+                        'url': f.get('url'),
+                        'type': 'audio' if is_audio else 'video'
+                    })
+
+            return {
+                "title": info.get('title'),
+                "thumbnail": info.get('thumbnail'),
+                "duration": f"{info.get('duration', 0) // 60}:{info.get('duration', 0) % 60:02d}",
+                "source": info.get('extractor_key'),
+                "formats": formats
+            }
     except Exception as e:
-        error_msg = str(e)
-        print(f"ERROR: {error_msg}")  # Log error
-        return jsonify({
-            'error': 'Download failed',
-            'message': f'Error: {error_msg}',
-            'tip': 'Cek URL-e bener apa ora, Cuk! 🤣'
-        }), 500
-    
-    finally:
-        # Cleanup - hapus temporary files
-        if download_dir and os.path.exists(download_dir):
-            try:
-                shutil.rmtree(download_dir, ignore_errors=True)
-            except:
-                pass
-
-# Error handlers
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Endpoint not found', 'message': '404 - Ora ono, Cuk! 🗿'}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Internal server error', 'message': '500 - Server error, Cuk! 💔'}), 500
-
-# JANGAN ADA handler() FUNCTION!
-# Flask app otomatis di-export kanggo Vercel
+        raise HTTPException(status_code=400, detail=str(e))
