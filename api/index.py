@@ -1,61 +1,72 @@
 import os
-from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 
 app = FastAPI()
 
-# PENTING: Izinkan akses dari GitHub Pages Anda
+# Izinkan Frontend di GitHub Pages mengakses ini
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Anda bisa mengganti "*" dengan URL GitHub Pages Anda nanti
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
 
-API_KEY = os.environ.get("API_KEY", "admin123")
-API_KEY_NAME = "X-API-KEY"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+# Ganti 'SECRET_TOKEN_123' dengan kode rahasia pilihan Anda di Env Variable Vercel
+API_KEY = os.environ.get("API_KEY", "SECRET_TOKEN_123")
 
-async def validate_api_key(header_value: str = Security(api_key_header)):
-    if header_value == API_KEY:
-        return header_value
-    raise HTTPException(status_code=403, detail="API Key Salah atau Tidak Ada")
+@app.get("/api/extract")
+async def extract_video(url: str, x_api_key: str = Header(None)):
+    # Validasi API Key dari Header (disembunyikan di JS)
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
-@app.get("/api/info")
-async def get_video_info(url: str, api_key: str = Depends(validate_api_key)):
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'format': 'best',
     }
-    
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            formats = []
             
+            formats_list = []
             for f in info.get('formats', []):
-                if f.get('url'):
-                    # Filter resolusi atau keterangan audio
-                    res = f.get('resolution') or f.get('format_note') or "Unknown"
-                    is_audio = f.get('vcodec') == 'none'
-                    
-                    formats.append({
-                        'format_id': f.get('format_id'),
-                        'ext': f.get('ext'),
-                        'resolution': res,
-                        'url': f.get('url'),
-                        'type': 'audio' if is_audio else 'video'
-                    })
+                if not f.get('url'): continue
+                
+                # Metadata Resolusi
+                height = f.get('height')
+                ext = f.get('ext')
+                vcodec = f.get('vcodec')
+                acodec = f.get('acodec')
+                
+                # Tentukan Tipe
+                if vcodec != 'none' and acodec != 'none':
+                    ftype = "Video + Audio"
+                elif vcodec != 'none':
+                    ftype = "Video (No Sound)"
+                else:
+                    ftype = "Audio Only"
+
+                # Filter hanya resolusi yang berguna (sampai 1080p)
+                label = f"{height}p" if height else "Audio"
+                
+                formats_list.append({
+                    "id": f.get('format_id'),
+                    "url": f.get('url'),
+                    "ext": ext,
+                    "resolution": label,
+                    "type": ftype,
+                    "size": f.get('filesize')
+                })
 
             return {
                 "title": info.get('title'),
                 "thumbnail": info.get('thumbnail'),
-                "duration": f"{info.get('duration', 0) // 60}:{info.get('duration', 0) % 60:02d}",
-                "source": info.get('extractor_key'),
-                "formats": formats
+                "duration": info.get('duration'),
+                "formats": formats_list
             }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
