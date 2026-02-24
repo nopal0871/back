@@ -14,7 +14,7 @@ app.add_middleware(
 )
 
 # Ganti 'SECRET_TOKEN_123' dengan kode rahasia pilihan Anda di Env Variable Vercel
-API_KEY = os.environ.get("API_KEY", "SECRET_TOKEN_123")
+API_KEY = os.environ.get("API_KEY", "TEMBO-RATAPAN-SOLO")
 
 @app.get("/api/extract")
 async def extract_video(url: str, x_api_key: str = Header(None)):
